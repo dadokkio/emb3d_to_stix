@@ -1,0 +1,2 @@
+beautifulsoup4==4.12.3
+stix2==3.0.1
