@@ -148,7 +148,22 @@ data = {
 inner_th_rels = {}
 
 
-def clean(obj, keys_to_exclude=[]):
+def clean(obj, keys_to_exclude=None):
+    """Cleans the input dictionary by excluding specified keys.
+
+    This function creates a new dictionary that contains only the keys from the input
+    dictionary that are not in the `keys_to_exclude` list. Additionally, it prefixes
+    the keys "category" and "level" with "x_" in the resulting dictionary.
+
+    Args:
+        obj (dict): The input dictionary to be cleaned.
+        keys_to_exclude (list, optional): A list of keys to exclude from the output dictionary. Defaults to an empty list.
+
+    Returns:
+        dict: A new dictionary containing the cleaned key-value pairs.
+    """
+    if keys_to_exclude is None:
+        keys_to_exclude = []
     tmp = {}
     for k, v in obj.items():
         if k not in keys_to_exclude:
@@ -159,18 +174,25 @@ def clean(obj, keys_to_exclude=[]):
     return tmp
 
 
-def process_mappings(filename, obj_type, rel_types=[], keys_to_exclude=set()):
-    """
-    Processes mappings from a JSON file and updates the data dictionary.
+def process_mappings(filename, obj_type, rel_types=None, keys_to_exclude=set()):
+    """Processes mappings from a JSON file and creates STIX objects.
+
+    This function reads a JSON file containing mappings for a specified object type,
+    creates corresponding STIX objects, and manages their relationships based on the
+    provided relationship types. It also cleans the objects by excluding specified keys.
 
     Args:
-        filename (str): Path to the JSON file.
-        obj_type (str): Key for the primary object type (e.g., "mitigations").
-        rel_types (list): List of tuples defining relationship types:
-                           [(related_object_key, action, reverse)]
-                           e.g., [("threats", "mitigates", False)]
-        keys_to_exclude (set): Keys to exclude when updating the primary object.
+        filename (str): The path to the JSON file containing the mappings.
+        obj_type (str): The type of object being processed (e.g., "mitigations").
+        rel_types (list, optional): A list of tuples defining relationship types and their properties. Defaults to an empty list.
+        keys_to_exclude (set, optional): A set of keys to exclude from the processed objects. Defaults to an empty set.
+
+    Returns:
+        None: This function modifies the global `data` structure but does not return a value.
     """
+
+    if rel_types is None:
+        rel_types = []
     with open(filename) as f:
         json_obj = json.loads(f.read())
 
@@ -212,9 +234,9 @@ def process_mappings(filename, obj_type, rel_types=[], keys_to_exclude=set()):
 
                         # relation could be reversed
                         from_id, to_id = (
-                            (stix_obj.id, stix_rel_obj.id)
-                            if not reverse
-                            else (stix_rel_obj.id, stix_obj.id)
+                            (stix_rel_obj.id, stix_obj.id)
+                            if reverse
+                            else (stix_obj.id, stix_rel_obj.id)
                         )
                     # list of item id
                     else:
@@ -231,9 +253,9 @@ def process_mappings(filename, obj_type, rel_types=[], keys_to_exclude=set()):
                             data[rel_type][stix_rel_obj["name"]] = rel_obj
 
                         from_id, to_id = (
-                            (stix_obj.id, rel_obj.id)
-                            if not reverse
-                            else (rel_obj.id, stix_obj.id)
+                            (rel_obj.id, stix_obj.id)
+                            if reverse
+                            else (stix_obj.id, rel_obj.id)
                         )
                     # create relationship
                     relationship = Relationship(
@@ -245,13 +267,21 @@ def process_mappings(filename, obj_type, rel_types=[], keys_to_exclude=set()):
 
 
 def extract_html_data(item, obj_type):
-    """
-    Extracts data from HTML files and updates the data dictionary.
+    """Extracts data from an HTML file and updates STIX objects.
+
+    This function reads an HTML file, parses its content to extract relevant information,
+    and updates the corresponding STIX objects in the global data structure. It handles
+    various fields such as title, description, references, and relationships to weaknesses
+    and vulnerabilities.
 
     Args:
-        item (Path): Path to the HTML file.
-        obj_type (str): Type of object ("mitigations" or "threats").
+        item (str): The path to the HTML file to be processed.
+        obj_type (str): The type of object being updated (e.g., "mitigations").
+
+    Returns:
+        None: This function modifies the global `data` structure but does not return a value.
     """
+
     with open(item, "r") as f:
         soup = BeautifulSoup(f.read(), "html.parser")
         article = soup.find("article")
@@ -271,13 +301,9 @@ def extract_html_data(item, obj_type):
                 data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
                     name=value
                 )
-            elif key == "description":
+            elif key in ["description", "threat description"]:
                 data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    description="".join(obj["description"])
-                )
-            elif key == "threat description":
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    description="".join(obj["threat description"])
+                    description="".join(obj[key])
                 )
             elif key == "iec 62443 4-2 mappings":
                 # TODO
@@ -290,7 +316,7 @@ def extract_html_data(item, obj_type):
                 refs = []
                 for ref in value:
                     if url := re.search(r"(?P<url>https?://[^\s]+)", ref):
-                        url = url.group("url")
+                        url = url["url"]
                     else:
                         url = None
                     obj_ref = ExternalReference(
@@ -329,7 +355,7 @@ def extract_html_data(item, obj_type):
                     # get code from cve if in text, else not sure
                     try:
                         name = [x for x in cve.split() if x.startswith("CVE-")][0]
-                    except:
+                    except Exception:
                         # TODO
                         continue
 
@@ -361,6 +387,18 @@ def extract_html_data(item, obj_type):
 
 
 def inner_relationships(filepath):
+    """Processes relationships between threats based on a JSON file.
+
+    This function reads a JSON file to identify relationships between threats defined
+    in the properties section. It creates "similar-to" relationships for pairs of threats
+    that are associated with the same properties.
+
+    Args:
+        filepath (str): The path to the JSON file containing threat relationships.
+
+    Returns:
+        None: This function modifies the global `data` structure but does not return a value.
+    """
     with open(filepath, "r") as f:
         json_data = json.loads(f.read())
     rels = [
