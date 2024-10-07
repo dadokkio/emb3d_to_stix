@@ -3,16 +3,15 @@ import uuid
 from bs4 import BeautifulSoup
 from objects.identity import make_emb3d_identity
 from objects.matrix import make_emb3d_matrix
-from objects.tactic import make_emb3d_tactics
-from objects.property import Property, process_props
+from objects.category import make_emb3d_categories
+from objects.property import process_props
 from objects.weakness import Weakness
 from objects.course_of_action import process_coas
 from objects.vulnerability import inner_relationships, process_threats
 from pathlib import Path
-from utils import create_or_update_stix_obj, create_relationship
+from utils import create_relationship
 from stix2 import (
     Vulnerability,
-    CourseOfAction,
     Bundle,
     ExternalReference,
 )
@@ -35,7 +34,7 @@ objects_info = {
 data = {
     "identities": [],
     "matrices": [],
-    "tactics": [],
+    "categories": [],
     "mitigations": {},
     "threats": {},
     "properties": {},
@@ -182,8 +181,11 @@ if __name__ == "__main__":
     )
 
     data["identities"] = make_emb3d_identity()
-    data["tactics"] = make_emb3d_tactics(data["identities"][0]["id"])
-    data["matrices"] = make_emb3d_matrix([x["id"] for x in data["tactics"]])
+    data["categories"] = make_emb3d_categories(
+        data["identities"][0]["id"],
+        list(set([x["x_category"] for x in data["threats"].values()])),
+    )
+    data["matrices"] = make_emb3d_matrix([x["id"] for x in data["categories"]])
 
     # grab descriptions and other info from html files
     for item in Path(".").glob("emb3d/**/*.html"):
