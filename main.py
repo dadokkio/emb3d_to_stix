@@ -68,6 +68,29 @@ def extract_html_data(item, obj_type):
         Examples:
             extract_html_data("path/to/file.html", "some_object_type")
     """
+
+    def update_data(obj_tag, key, value):
+        match key:
+            case "title":
+                return data[obj_type][obj_tag].new_version(name=value)
+            case "description" | "threat description":
+                return data[obj_type][obj_tag].new_version(description="".join(value))
+            case "iec 62443 4-2 mappings":
+                return data[obj_type][obj_tag].new_version(x_iec_62443=value)
+            case "threat maturity and evidence":
+                return data[obj_type][obj_tag].new_version(x_maturity=value)
+            case "references":
+                refs = [
+                    ExternalReference(
+                        source_name="mitre", description=ref, url=url["url"]
+                    )
+                    for ref in value
+                    if (url := re.search(r"(?P<url>https?://[^\s]+)", ref))
+                ]
+                return data[obj_type][obj_tag].new_version(external_references=refs)
+            case _:
+                return data[obj_type][obj_tag].new_version(**{key: value})
+
     with open(item, "r") as f:
         soup = BeautifulSoup(f.read(), "html.parser")
         article = soup.find("article")
@@ -83,74 +106,34 @@ def extract_html_data(item, obj_type):
             obj.setdefault(title, []).append(" ".join(text.split()))
 
         for key, value in obj.items():
-            if key == "title":
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    name=value
-                )
-            elif key in ["description", "threat description"]:
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    description="".join(obj[key])
-                )
-            elif key == "iec 62443 4-2 mappings":
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    x_iec_62443=value
-                )
-            elif key == "threat maturity and evidence":
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    x_maturity=value
-                )
-            elif key == "references":
-                refs = []
-                for ref in value:
-                    if url := re.search(r"(?P<url>https?://[^\s]+)", ref):
-                        url = url["url"]
-                        obj_ref = ExternalReference(
-                            source_name="mitre", description=ref, url=url
-                        )
-                        refs.append(obj_ref)
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    external_references=refs
-                )
-            elif key == "cwe":
-                for cwe in value:
-                    name, *description = cwe.split(":")
-                    # create or relate cwe
-                    try:
-                        from_id = data["weaknesses"][name].id
-                    except KeyError:
-                        description = " ".join(description).strip()
-                        from_id = f"weakness--{uuid.uuid4()}"
-                        data["weaknesses"][name] = Weakness(
-                            id=from_id,
-                            name=name,
-                            description=description,
-                        )
-                    data["relationships"].append(
-                        create_relationship(
-                            from_id,
-                            data[obj_type][obj_tag].id,
-                            "related-to",
-                        )
-                    )
-            elif key == "cve":
-                for cve in value:
-                    # get code from cve if in text, else not sure
-                    try:
-                        name = [x for x in cve.split() if x.startswith("CVE-")][0]
-                    except Exception:
-                        # TODO
-                        continue
-
-                    # create or relate vulnerability
-                    try:
-                        from_id = data["threats"][name].id
-                    except KeyError:
-                        from_id = f"vulnerability--{uuid.uuid4()}"
-                        data["threats"][name] = Vulnerability(
-                            id=from_id,
-                            name=name,
-                            description=cve,
-                        )
+            if key in ["cwe", "cve"]:
+                for item in value:
+                    if key == "cwe":
+                        name, *description = item.split(":")
+                        try:
+                            from_id = data["weaknesses"][name].id
+                        except KeyError:
+                            description = " ".join(description).strip()
+                            from_id = f"weakness--{uuid.uuid4()}"
+                            data["weaknesses"][name] = Weakness(
+                                id=from_id,
+                                name=name,
+                                description=description,
+                            )
+                    elif key == "cve":
+                        try:
+                            name = [x for x in item.split() if x.startswith("CVE-")][0]
+                        except Exception:
+                            continue
+                        try:
+                            from_id = data["threats"][name].id
+                        except KeyError:
+                            from_id = f"vulnerability--{uuid.uuid4()}"
+                            data["threats"][name] = Vulnerability(
+                                id=from_id,
+                                name=name,
+                                description=item,
+                            )
                     data["relationships"].append(
                         create_relationship(
                             from_id,
@@ -159,30 +142,36 @@ def extract_html_data(item, obj_type):
                         )
                     )
             else:
-                # update other fields
-                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
-                    **{key: value}
-                )
+                data[obj_type][obj_tag] = update_data(obj_tag, key, value)
 
 
+# sourcery skip: collection-builtin-to-comprehension, comprehension-to-generator
 if __name__ == "__main__":
+
+    data["identities"] = make_emb3d_identity()
+    identity = data["identities"][0]["id"]
+
     process_coas(
-        data, "emb3d/_data/mitigations_threat_mappings.json", {"threats", "id", "name"}
+        data,
+        "emb3d/_data/mitigations_threat_mappings.json",
+        identity,
+        {"threats", "id", "name"},
     )
     process_props(
         data,
         "emb3d/_data/properties_threat_mappings.json",
+        identity,
         {"threats", "id", "subProps", "isparentProp", "parentProp", "name", "text"},
     )
     process_threats(
         data,
         "emb3d/_data/threats_properties_mitigations_mappings.json",
+        identity,
         {"properties", "id", "mitigations", "name"},
     )
 
-    data["identities"] = make_emb3d_identity()
     data["categories"] = make_emb3d_categories(
-        data["identities"][0]["id"],
+        identity,
         list(set([x["x_category"] for x in data["threats"].values()])),
     )
     data["matrices"] = make_emb3d_matrix([x["id"] for x in data["categories"]])

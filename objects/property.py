@@ -46,7 +46,7 @@ class Property(object):
         pass
 
 
-def process_props(data, filename, keys_to_exclude=None):
+def process_props(data, filename, identity, keys_to_exclude=None):
     """Processes property data from a JSON file.
 
     This function reads a JSON file containing property data, creates or
@@ -84,8 +84,9 @@ def process_props(data, filename, keys_to_exclude=None):
                 obj,
                 Property,
                 data["properties"],
+                identity,
                 keys_to_exclude,
-                **clean(obj, keys_to_exclude)
+                **clean(obj, identity, keys_to_exclude)
             )
             data["properties"][stix_obj["name"]] = stix_obj
 
@@ -95,8 +96,9 @@ def process_props(data, filename, keys_to_exclude=None):
                     rel_obj,
                     Vulnerability,
                     data["threats"],
+                    identity,
                     keys_to_exclude,
-                    **clean(rel_obj, keys_to_exclude)
+                    **clean(rel_obj, identity, keys_to_exclude)
                 )
                 data["relationships"].append(
                     create_relationship(stix_obj.id, stix_rel_obj.id, "indicates")
@@ -104,7 +106,11 @@ def process_props(data, filename, keys_to_exclude=None):
 
             for rel_obj in obj.get("subProps", []):
                 stix_rel_obj = create_or_update_stix_obj(
-                    {"id": rel_obj}, Property, data["properties"], keys_to_exclude
+                    {"id": rel_obj},
+                    Property,
+                    data["properties"],
+                    identity,
+                    keys_to_exclude,
                 )
                 data["relationships"].append(
                     create_relationship(stix_rel_obj.id, stix_obj.id, "is-subs-of")

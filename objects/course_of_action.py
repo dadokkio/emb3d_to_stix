@@ -3,7 +3,7 @@ from utils import clean, create_or_update_stix_obj, create_relationship
 from stix2 import CourseOfAction, Vulnerability
 
 
-def process_coas(data, filename, keys_to_exclude=None):
+def process_coas(data, filename, identity, keys_to_exclude=None):
     """Processes course of action data from a JSON file.
 
     This function reads a JSON file containing mitigation data, creates or
@@ -41,8 +41,9 @@ def process_coas(data, filename, keys_to_exclude=None):
                 obj,
                 CourseOfAction,
                 data["mitigations"],
+                identity,
                 keys_to_exclude,
-                **clean(obj, keys_to_exclude)
+                **clean(obj, identity, keys_to_exclude)
             )
             data["mitigations"][stix_obj["name"]] = stix_obj
 
@@ -52,15 +53,16 @@ def process_coas(data, filename, keys_to_exclude=None):
                 try:
                     stix_rel_obj = data["threats"][name]
                     stix_rel_obj = stix_rel_obj.new_version(
-                        **clean(rel_obj, keys_to_exclude)
+                        **clean(rel_obj, None, keys_to_exclude)
                     )
                 except KeyError:
                     stix_rel_obj = create_or_update_stix_obj(
                         rel_obj,
                         Vulnerability,
                         data["threats"],
+                        identity,
                         keys_to_exclude,
-                        **clean(rel_obj, keys_to_exclude)
+                        **clean(rel_obj, identity, keys_to_exclude)
                     )
                     data["threats"][stix_rel_obj["name"]] = stix_rel_obj
 
