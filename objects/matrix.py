@@ -8,7 +8,7 @@ from stix2.properties import StringProperty, ListProperty, ReferenceProperty
         ("name", StringProperty(required=True)),
         ("description", StringProperty(required=True)),
         (
-            "tactic_refs",
+            "category_refs",
             ListProperty(ReferenceProperty(valid_types="SDO"), required=True),
         ),
     ],
@@ -18,11 +18,11 @@ class Matrix(object):
         pass
 
 
-def make_emb3d_matrix(tactics):
+def make_emb3d_matrix(categories):
     """Creates a Matrix object.
 
     Args:
-        tactics: A list of Tactic objects UIDs.
+        categories: A list of Category objects UIDs.
 
     Returns:
 
@@ -41,7 +41,7 @@ def make_emb3d_matrix(tactics):
         name=name,
         description=description,
         external_references=external_references,
-        tactic_refs=tactics,
+        category_refs=categories,
         allow_custom=True,
     )
     return [matrix]
