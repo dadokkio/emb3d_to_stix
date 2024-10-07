@@ -1,287 +1,74 @@
-from itertools import combinations
-import json
+import re
 import uuid
-from pathlib import Path
 from bs4 import BeautifulSoup
+from objects.identity import make_emb3d_identity
+from objects.matrix import make_emb3d_matrix
+from objects.tactic import make_emb3d_tactics
+from objects.property import Property, process_props
+from objects.weakness import Weakness
+from objects.course_of_action import process_coas
+from objects.vulnerability import inner_relationships, process_threats
+from pathlib import Path
+from utils import create_or_update_stix_obj, create_relationship
 from stix2 import (
-    CustomObject,
     Vulnerability,
     CourseOfAction,
-    Relationship,
     Bundle,
     ExternalReference,
 )
-
-
-from stix2.properties import (
-    ExtensionsProperty,
-    ReferenceProperty,
-    IDProperty,
-    ListProperty,
-    StringProperty,
-    TimestampProperty,
-    TypeProperty,
-)
-from stix2.v21.common import (
-    ExternalReference,
-)
-from stix2.utils import NOW
-import re
-
-
-@CustomObject(
-    "property",
-    [
-        ("type", TypeProperty("property", spec_version="2.1")),
-        ("spec_version", StringProperty(fixed="2.1")),
-        ("id", IDProperty("property", spec_version="2.1")),
-        (
-            "created_by_ref",
-            ReferenceProperty(valid_types="identity", spec_version="2.1"),
-        ),
-        (
-            "created",
-            TimestampProperty(
-                default=lambda: NOW, precision="millisecond", precision_constraint="min"
-            ),
-        ),
-        (
-            "modified",
-            TimestampProperty(
-                default=lambda: NOW, precision="millisecond", precision_constraint="min"
-            ),
-        ),
-        ("name", StringProperty(required=True)),
-        ("description", StringProperty()),
-        ("extensions", ExtensionsProperty(spec_version="2.1")),
-    ],
-)
-class Property(object):
-    def __init__(self, **kwargs):
-        pass
-
-
-@CustomObject(
-    "weakness",
-    [
-        ("type", TypeProperty("weakness", spec_version="2.1")),
-        ("spec_version", StringProperty(fixed="2.1")),
-        ("id", IDProperty("weakness", spec_version="2.1")),
-        (
-            "created_by_ref",
-            ReferenceProperty(valid_types="identity", spec_version="2.1"),
-        ),
-        (
-            "created",
-            TimestampProperty(
-                default=lambda: NOW, precision="millisecond", precision_constraint="min"
-            ),
-        ),
-        (
-            "modified",
-            TimestampProperty(
-                default=lambda: NOW, precision="millisecond", precision_constraint="min"
-            ),
-        ),
-        ("name", StringProperty(required=True)),
-        ("description", StringProperty()),
-        ("modes_of_introduction", ListProperty(StringProperty)),
-        ("common_consequences", ListProperty(StringProperty)),
-        ("detection_methods", ListProperty(StringProperty)),
-        ("likelihood_of_exploit", ListProperty(StringProperty)),
-        ("external_references", ListProperty(ExternalReference)),
-        (
-            "object_marking_refs",
-            ListProperty(
-                ReferenceProperty(valid_types="marking-definition", spec_version="2.1")
-            ),
-        ),
-        ("extensions", ExtensionsProperty(spec_version="2.1")),
-    ],
-)
-class Weakness(object):
-    def __init__(self, **kwargs):
-        pass
+from stix2.v21.common import ExternalReference
 
 
 objects_info = {
     "threats": {
         "code": "TID",
         "key": "threattitle",
-        "class": Vulnerability,
-        "uid_prefix": "vulnerability--",
-        "name": "title",
-        "description": "description",
         "query": "article div > *:not(div, h1, h2)",
     },
     "mitigations": {
         "code": "MID",
         "key": "mitigationTitle",
-        "class": CourseOfAction,
-        "uid_prefix": "course-of-action--",
-        "name": "id",
-        "description": "description",
         "query": "article > *:not(div, h1, h2)",
-    },
-    "properties": {
-        "class": Property,
-        "uid_prefix": "property--",
-        "name": "id",
-        "description": "text",
-    },
-    "weaknesses": {
-        "class": Weakness,
-        "uid_prefix": "weakness--",
-        "name": "title",
-        "description": "description",
     },
 }
 
 data = {
+    "identities": [],
+    "matrices": [],
+    "tactics": [],
     "mitigations": {},
     "threats": {},
     "properties": {},
-    "relationships": {},
+    "relationships": [],
     "weaknesses": {},
 }
 
-inner_th_rels = {}
-
-
-def clean(obj, keys_to_exclude=None):
-    """Cleans the input dictionary by excluding specified keys.
-
-    This function creates a new dictionary that contains only the keys from the input
-    dictionary that are not in the `keys_to_exclude` list. Additionally, it prefixes
-    the keys "category" and "level" with "x_" in the resulting dictionary.
-
-    Args:
-        obj (dict): The input dictionary to be cleaned.
-        keys_to_exclude (list, optional): A list of keys to exclude from the output dictionary. Defaults to an empty list.
-
-    Returns:
-        dict: A new dictionary containing the cleaned key-value pairs.
-    """
-    if keys_to_exclude is None:
-        keys_to_exclude = []
-    tmp = {}
-    for k, v in obj.items():
-        if k not in keys_to_exclude:
-            if k in ["category", "level"]:
-                tmp[f"x_{k}"] = v
-            else:
-                tmp[k] = v
-    return tmp
-
-
-def process_mappings(filename, obj_type, rel_types=None, keys_to_exclude=set()):
-    """Processes mappings from a JSON file and creates STIX objects.
-
-    This function reads a JSON file containing mappings for a specified object type,
-    creates corresponding STIX objects, and manages their relationships based on the
-    provided relationship types. It also cleans the objects by excluding specified keys.
-
-    Args:
-        filename (str): The path to the JSON file containing the mappings.
-        obj_type (str): The type of object being processed (e.g., "mitigations").
-        rel_types (list, optional): A list of tuples defining relationship types and their properties. Defaults to an empty list.
-        keys_to_exclude (set, optional): A set of keys to exclude from the processed objects. Defaults to an empty set.
-
-    Returns:
-        None: This function modifies the global `data` structure but does not return a value.
-    """
-
-    if rel_types is None:
-        rel_types = []
-    with open(filename) as f:
-        json_obj = json.loads(f.read())
-
-        for obj in json_obj[obj_type]:
-            tmp = clean(obj, keys_to_exclude)
-
-            # create main object
-            stix_obj = objects_info[obj_type]["class"](
-                id=f"{objects_info[obj_type]['uid_prefix']}{uuid.uuid4()}",
-                name=obj.get(objects_info[obj_type]["name"], ""),
-                description=obj.get(objects_info[obj_type]["description"], ""),
-                allow_custom=True,
-                **tmp,
-            )
-            data[obj_type][stix_obj["name"]] = stix_obj
-
-            # manage related items
-            for rel_type, rel_name, reverse, rel_key in rel_types:
-                for rel_obj in obj.get(rel_key, []):
-                    # dict could have info.. pick existing and update or create
-                    if isinstance(rel_obj, dict):
-
-                        name = rel_obj.get(objects_info[obj_type]["name"], "")
-                        try:
-                            stix_rel_obj = data[rel_type][name]
-                            stix_rel_obj = stix_rel_obj.new_version(**tmp)
-                        except KeyError:
-                            tmp = clean(rel_obj, keys_to_exclude)
-                            stix_rel_obj = objects_info[rel_type].get("class")(
-                                id=f"{objects_info[rel_type]['uid_prefix']}{uuid.uuid4()}",
-                                allow_custom=True,
-                                name=name,
-                                description=rel_obj.get(
-                                    objects_info[obj_type]["description"], ""
-                                ),
-                                **tmp,
-                            )
-                            data[rel_type][stix_rel_obj["name"]] = stix_rel_obj
-
-                        # relation could be reversed
-                        from_id, to_id = (
-                            (stix_rel_obj.id, stix_obj.id)
-                            if reverse
-                            else (stix_obj.id, stix_rel_obj.id)
-                        )
-                    # list of item id
-                    else:
-
-                        # get item by name or create new
-                        try:
-                            rel_obj = data[rel_type][rel_obj]
-                        except KeyError:
-                            rel_obj = objects_info[rel_type].get("class")(
-                                id=f"{objects_info[rel_type]['uid_prefix']}{uuid.uuid4()}",
-                                allow_custom=True,
-                                name=rel_obj,
-                            )
-                            data[rel_type][stix_rel_obj["name"]] = rel_obj
-
-                        from_id, to_id = (
-                            (rel_obj.id, stix_obj.id)
-                            if reverse
-                            else (stix_obj.id, rel_obj.id)
-                        )
-                    # create relationship
-                    relationship = Relationship(
-                        source_ref=from_id,
-                        target_ref=to_id,
-                        relationship_type=rel_name,
-                    )
-                    data["relationships"].setdefault(f"{from_id}_{to_id}", relationship)
-
 
 def extract_html_data(item, obj_type):
-    """Extracts data from an HTML file and updates STIX objects.
-
-    This function reads an HTML file, parses its content to extract relevant information,
-    and updates the corresponding STIX objects in the global data structure. It handles
-    various fields such as title, description, references, and relationships to weaknesses
-    and vulnerabilities.
-
-    Args:
-        item (str): The path to the HTML file to be processed.
-        obj_type (str): The type of object being updated (e.g., "mitigations").
-
-    Returns:
-        None: This function modifies the global `data` structure but does not return a value.
     """
+    Extracts data from an HTML file and updates a data structure.
 
+        This function reads an HTML file, parses it to extract relevant information,
+        and updates a global data structure with the extracted data. It processes
+        various sections of the HTML document, including titles, descriptions,
+        references, and relationships, based on the specified object type.
+
+        Args:
+            item (str): The path to the HTML file to be processed.
+            obj_type (str): The type of object being processed, which determines
+                            how the extracted data is structured and stored.
+
+        Returns:
+            None: This function updates a global data structure but does not return
+                any value.
+
+        Raises:
+            FileNotFoundError: If the specified HTML file does not exist.
+            ValueError: If the HTML structure does not match expected formats.
+
+        Examples:
+            extract_html_data("path/to/file.html", "some_object_type")
+    """
     with open(item, "r") as f:
         soup = BeautifulSoup(f.read(), "html.parser")
         article = soup.find("article")
@@ -306,8 +93,9 @@ def extract_html_data(item, obj_type):
                     description="".join(obj[key])
                 )
             elif key == "iec 62443 4-2 mappings":
-                # TODO
-                continue
+                data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
+                    x_iec_62443=value
+                )
             elif key == "threat maturity and evidence":
                 data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
                     x_maturity=value
@@ -317,12 +105,10 @@ def extract_html_data(item, obj_type):
                 for ref in value:
                     if url := re.search(r"(?P<url>https?://[^\s]+)", ref):
                         url = url["url"]
-                    else:
-                        url = None
-                    obj_ref = ExternalReference(
-                        source_name="mitre", description=ref, url=url
-                    )
-                    refs.append(obj_ref)
+                        obj_ref = ExternalReference(
+                            source_name="mitre", description=ref, url=url
+                        )
+                        refs.append(obj_ref)
                 data[obj_type][obj_tag] = data[obj_type][obj_tag].new_version(
                     external_references=refs
                 )
@@ -334,21 +120,18 @@ def extract_html_data(item, obj_type):
                         from_id = data["weaknesses"][name].id
                     except KeyError:
                         description = " ".join(description).strip()
-                        from_id = (
-                            f"{objects_info['weaknesses']['uid_prefix']}{uuid.uuid4()}"
-                        )
+                        from_id = f"weakness--{uuid.uuid4()}"
                         data["weaknesses"][name] = Weakness(
                             id=from_id,
                             name=name,
                             description=description,
                         )
-                    relationship = Relationship(
-                        source_ref=from_id,
-                        target_ref=data[obj_type][obj_tag].id,
-                        relationship_type="related-to",
-                    )
-                    data["relationships"].setdefault(
-                        f"{from_id}_{data[obj_type][obj_tag].id}", relationship
+                    data["relationships"].append(
+                        create_relationship(
+                            from_id,
+                            data[obj_type][obj_tag].id,
+                            "related-to",
+                        )
                     )
             elif key == "cve":
                 for cve in value:
@@ -363,21 +146,18 @@ def extract_html_data(item, obj_type):
                     try:
                         from_id = data["threats"][name].id
                     except KeyError:
-                        from_id = (
-                            f"{objects_info['threats']['uid_prefix']}{uuid.uuid4()}"
-                        )
+                        from_id = f"vulnerability--{uuid.uuid4()}"
                         data["threats"][name] = Vulnerability(
                             id=from_id,
                             name=name,
                             description=cve,
                         )
-                    relationship = Relationship(
-                        source_ref=from_id,
-                        target_ref=data[obj_type][obj_tag].id,
-                        relationship_type="related-to",
-                    )
-                    data["relationships"].setdefault(
-                        f"{from_id}_{data[obj_type][obj_tag].id}", relationship
+                    data["relationships"].append(
+                        create_relationship(
+                            from_id,
+                            data[obj_type][obj_tag].id,
+                            "related-to",
+                        )
                     )
             else:
                 # update other fields
@@ -386,66 +166,24 @@ def extract_html_data(item, obj_type):
                 )
 
 
-def inner_relationships(filepath):
-    """Processes relationships between threats based on a JSON file.
-
-    This function reads a JSON file to identify relationships between threats defined
-    in the properties section. It creates "similar-to" relationships for pairs of threats
-    that are associated with the same properties.
-
-    Args:
-        filepath (str): The path to the JSON file containing threat relationships.
-
-    Returns:
-        None: This function modifies the global `data` structure but does not return a value.
-    """
-    with open(filepath, "r") as f:
-        json_data = json.loads(f.read())
-    rels = [
-        u
-        for u in [
-            [k["id"] for k in x.get("threats", [])] for x in json_data["properties"]
-        ]
-        if len(u) > 1
-    ]
-    for rel in rels:
-        pairs = list(combinations(rel, 2))
-        for start, end in pairs:
-            start_obj = data["threats"][start].id
-            end_obj = data["threats"][end].id
-            relationship = Relationship(
-                source_ref=start_obj,
-                target_ref=end_obj,
-                relationship_type="similar-to",
-            )
-            data["relationships"].setdefault(f"{start_obj}_{end_obj}", relationship)
-
-
 if __name__ == "__main__":
-    process_mappings(
-        "emb3d/_data/mitigations_threat_mappings.json",
-        "mitigations",
-        [("threats", "mitigates", False, "threats")],
-        {"threats", "id", "name"},
+    process_coas(
+        data, "emb3d/_data/mitigations_threat_mappings.json", {"threats", "id", "name"}
     )
-    process_mappings(
+    process_props(
+        data,
         "emb3d/_data/properties_threat_mappings.json",
-        "properties",
-        [
-            ("threats", "has", True, "threats"),
-            ("properties", "is-subs-of", True, "subProps"),
-        ],
-        {"threats", "id", "subProps", "isparentProp", "parentProp", "name"},
+        {"threats", "id", "subProps", "isparentProp", "parentProp", "name", "text"},
     )
-    process_mappings(
+    process_threats(
+        data,
         "emb3d/_data/threats_properties_mitigations_mappings.json",
-        "threats",
-        [
-            ("properties", "has", False, "properties"),
-            ("mitigations", "mitigates", True, "mitigations"),
-        ],
         {"properties", "id", "mitigations", "name"},
     )
+
+    data["identities"] = make_emb3d_identity()
+    data["tactics"] = make_emb3d_tactics(data["identities"][0]["id"])
+    data["matrices"] = make_emb3d_matrix([x["id"] for x in data["tactics"]])
 
     # grab descriptions and other info from html files
     for item in Path(".").glob("emb3d/**/*.html"):
@@ -455,12 +193,16 @@ if __name__ == "__main__":
         ):
             extract_html_data(item, item.parent.stem)
 
-    inner_relationships("emb3d/_data/properties_threat_mappings.json")
+    # add internal similarity relationship for vulnerability
+    inner_relationships(data, "emb3d/_data/properties_threat_mappings.json")
 
     # generate list of items
     stix_objects = []
     for obj_type in data:
-        stix_objects.extend(data[obj_type].values())
+        try:
+            stix_objects.extend(data[obj_type].values())
+        except AttributeError:
+            stix_objects.extend(data[obj_type])
 
     # remove text field
     stix_objects = [item.new_version(text=None) for item in stix_objects]

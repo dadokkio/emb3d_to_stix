@@ -2,3 +2,4 @@ emb3d
 .history
 main_old.py
 .vscode/launch.json
+**/__pycache__
